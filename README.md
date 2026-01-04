@@ -1,4 +1,4 @@
-# Smart Wrong Notebook (智能错题本)
+# Smart Wrong Notebook (智能错题本)-lic
 
 一个基于 AI 的智能错题管理系统，帮助学生高效整理、分析和复习错题。
 
