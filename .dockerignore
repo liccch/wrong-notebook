@@ -48,3 +48,7 @@ test_output*.txt
 README.md
 docs
 doc
+
+# Ignore other projects
+PandaWiki
+pandawiki

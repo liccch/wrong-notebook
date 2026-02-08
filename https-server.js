@@ -1,10 +1,5 @@
 /**
- * HTTPS wrapper for Next.js standalone server
- * 
- * 使用方法:
- * 1. 生成证书放到 /app/certs/ 目录
- * 2. 设置环境变量 HTTPS_ENABLED=true
- * 3. 容器会自动使用 HTTPS
+ * HTTPS wrapper for Next.js standalone server - Debug Version
  */
 const https = require('https');
 const http = require('http');
@@ -14,18 +9,13 @@ const path = require('path');
 const CERT_DIR = process.env.CERT_DIR || '/app/certs';
 const CERT_FILE = path.join(CERT_DIR, 'cert.pem');
 const KEY_FILE = path.join(CERT_DIR, 'key.pem');
+const PROXY_TIMEOUT = 300000;
 
-// 超时配置（毫秒）- 与 AI 分析超时保持一致
-const PROXY_TIMEOUT = 300000; // 5 分钟，足够 AI 分析 + 重试
-
-// 检查证书是否存在
 if (!fs.existsSync(CERT_FILE) || !fs.existsSync(KEY_FILE)) {
     console.error('[HTTPS] 证书文件不存在:', CERT_DIR);
-    console.error('[HTTPS] 请确保 cert.pem 和 key.pem 存在于该目录');
     process.exit(1);
 }
 
-// 读取证书
 const options = {
     key: fs.readFileSync(KEY_FILE),
     cert: fs.readFileSync(CERT_FILE),
@@ -34,35 +24,35 @@ const options = {
 const port = parseInt(process.env.PORT || '3000', 10);
 
 console.log(`[HTTPS] 启动 HTTPS 代理，端口 443 -> HTTP ${port}`);
-console.log(`[HTTPS] 代理超时设置: ${PROXY_TIMEOUT / 1000} 秒`);
 
 const httpsServer = https.createServer(options, (req, res) => {
-    const proxyReq = http.request({
+    const startTime = Date.now();
+    console.log(`[HTTPS] 请求开始: ${req.method} ${req.url}`);
+
+    const proxyOptions = {
         hostname: '127.0.0.1',
         port: port,
         path: req.url,
         method: req.method,
-        headers: {
-            ...req.headers,
-            // 确保 Host 头正确
-            host: req.headers.host || `127.0.0.1:${port}`,
-        },
-        // 设置代理请求超时
+        headers: req.headers,
         timeout: PROXY_TIMEOUT,
-    }, (proxyRes) => {
-        // 复制响应头
+    };
+
+    const proxyReq = http.request(proxyOptions, (proxyRes) => {
+        console.log(`[HTTPS] 收到响应: ${proxyRes.statusCode} for ${req.method} ${req.url}`);
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        // 流式传输响应体
         proxyRes.pipe(res);
+
+        proxyRes.on('end', () => {
+            console.log(`[HTTPS] 响应完成: ${req.method} ${req.url} (${Date.now() - startTime}ms)`);
+        });
     });
 
-    // 设置客户端连接超时
     req.setTimeout(PROXY_TIMEOUT);
     res.setTimeout(PROXY_TIMEOUT);
 
-    // 代理请求超时处理
     proxyReq.on('timeout', () => {
-        console.error('[HTTPS] 代理请求超时');
+        console.error(`[HTTPS] 超时: ${req.method} ${req.url}`);
         proxyReq.destroy();
         if (!res.headersSent) {
             res.writeHead(504);
@@ -70,28 +60,42 @@ const httpsServer = https.createServer(options, (req, res) => {
         }
     });
 
-    // 代理错误处理
     proxyReq.on('error', (err) => {
-        console.error('[HTTPS] 代理错误:', err.message);
+        console.error(`[HTTPS] 代理错误 for ${req.method} ${req.url}:`, err.message, err.code);
         if (!res.headersSent) {
             res.writeHead(502);
             res.end('Bad Gateway');
         }
     });
 
-    // 客户端断开连接时，终止代理请求
-    req.on('close', () => {
+    req.on('error', (err) => {
+        console.error(`[HTTPS] 客户端错误 for ${req.method} ${req.url}:`, err.message);
         proxyReq.destroy();
     });
 
-    // 将请求体转发到代理
-    req.pipe(proxyReq);
+    req.on('close', () => {
+        console.log(`[HTTPS] 客户端关闭连接: ${req.method} ${req.url}`);
+        // 不要在这里 destroy proxyReq，会导致正常请求被中断
+        // proxyReq.destroy();
+    });
+
+    let bytesReceived = 0;
+
+    req.on('data', (chunk) => {
+        bytesReceived += chunk.length;
+        console.log(`[HTTPS] 收到数据: ${chunk.length} bytes (total: ${bytesReceived})`);
+        proxyReq.write(chunk);
+    });
+
+    req.on('end', () => {
+        console.log(`[HTTPS] 请求体结束: ${req.method} ${req.url}, total ${bytesReceived} bytes`);
+        proxyReq.end();
+    });
 });
 
-// 服务器级别超时配置
 httpsServer.timeout = PROXY_TIMEOUT;
-httpsServer.keepAliveTimeout = 65000; // 65 秒 Keep-Alive
-httpsServer.headersTimeout = 66000;   // 略大于 keepAliveTimeout
+httpsServer.keepAliveTimeout = 65000;
+httpsServer.headersTimeout = 66000;
 
 const httpsPort = parseInt(process.env.HTTPS_PORT || '443', 10);
 
